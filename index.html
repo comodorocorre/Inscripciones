@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Comodoro Corre - Clasificaciones</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script type="module">
+  import { initializeApp }                                                    from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+  import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+  import { getFirestore, collection, getDocs, doc, setDoc, deleteDoc }        from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+  const app  = initializeApp({
+    apiKey:            "AIzaSyDP7uYDiye-pMXa7_q-fqEtYS3hlr2K-hI",
+    authDomain:        "inscriptos-comodoro-corre.firebaseapp.com",
+    projectId:         "inscriptos-comodoro-corre",
+    storageBucket:     "inscriptos-comodoro-corre.firebasestorage.app",
+    messagingSenderId: "878079946889",
+    appId:             "1:878079946889:web:e679b235ce04f920e75658"
+  });
+  const auth = getAuth(app);
+  const db   = getFirestore(app);
+
+  window.__fb = {
+    login:  (email, pass) => signInWithEmailAndPassword(auth, email, pass),
+    logout: ()            => signOut(auth),
+    onAuth: (cb)          => onAuthStateChanged(auth, cb),
+    list:   async (col)   => { const snap = await getDocs(collection(db, col)); return snap.docs.map(d=>({id:d.id,...d.data()})); },
+    save:   (col, id, data) => setDoc(doc(db, col, id), data),
+    del:    (col, id)       => deleteDoc(doc(db, col, id)),
+  };
+  window.dispatchEvent(new Event("fb-ready"));
+</script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: #f4f4f5; min-height: 100vh; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useRef, useEffect } = React;
+
+const COL         = "clasificaciones";
+const ADMIN_EMAIL = "comodorocorre@gmail.com";
+const C = {
+  orange:"#E8611A", orangePale:"#FEF0E8", orangeBorder:"#F5C4A0",
+  green:"#7DC230",  greenDark:"#5D9E18",  gray:"#9E9E9E",
+};
+
+const normalize = str =>
+  String(str||"").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+
+function parseCSV(text) {
+  const sep   = text.includes(";") ? ";" : ",";
+  const lines = text.trim().split(/\r?\n/);
+  if (lines.length < 2) return [];
+  const headers = lines[0].split(sep).map(h=>h.trim().replace(/^"|"$/g,""));
+  return lines.slice(1).map(line => {
+    const vals = line.split(sep).map(v=>v.trim().replace(/^"|"$/g,""));
+    const obj  = {};
+    headers.forEach((h,i) => { obj[h] = vals[i]||""; });
+    return obj;
+  }).filter(r => Object.values(r).some(v=>v));
+}
+
+function parseXLSX(buffer) {
+  try {
+    const bytes = new Uint8Array(buffer);
+    if (bytes[0]!==0x50||bytes[1]!==0x4B) return null;
+    const zip = readZIP(bytes);
+    const ss  = parseSharedStrings(zip["xl/sharedStrings.xml"]||"");
+    return parseSheet(zip["xl/worksheets/sheet1.xml"]||"", ss);
+  } catch { return null; }
+}
+function readZIP(bytes) {
+  const files={}; let i=0;
+  while (i < bytes.length-4) {
+    if (bytes[i]===0x50&&bytes[i+1]===0x4B&&bytes[i+2]===0x03&&bytes[i+3]===0x04) {
+      const cm=bytes[i+8]|(bytes[i+9]<<8), cs=bytes[i+18]|(bytes[i+19]<<8)|(bytes[i+20]<<16)|(bytes[i+21]<<24);
+      const nl=bytes[i+26]|(bytes[i+27]<<8), el=bytes[i+28]|(bytes[i+29]<<8);
+      const name=new TextDecoder().decode(bytes.slice(i+30,i+30+nl));
+      const ds=i+30+nl+el;
+      if (cm===0) files[name]=new TextDecoder("utf-8").decode(bytes.slice(ds,ds+cs));
+      i=ds+cs;
+    } else { i++; }
+  }
+  return files;
+}
+function parseSharedStrings(xml) {
+  if (!xml) return [];
+  const strings=[], re=/<si>[\s\S]*?<\/si>/g; let m;
+  while ((m=re.exec(xml))!==null) {
+    const tM=m[0].match(/<t[^>]*>([\s\S]*?)<\/t>/g)||[];
+    strings.push(tM.map(t=>t.replace(/<[^>]+>/g,"").replace(/&amp;/g,"&").replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&quot;/g,'"')).join(""));
+  }
+  return strings;
+}
+function parseSheet(xml, ss) {
+  if (!xml) return [];
+  const rows=[], rowRe=/<row[^>]*>([\s\S]*?)<\/row>/g; let rowM;
+  while ((rowM=rowRe.exec(xml))!==null) {
+    const cells=[], cellRe=/<c ([^>]*)>([\s\S]*?)<\/c>/g; let cellM;
+    while ((cellM=cellRe.exec(rowM[1]))!==null) {
+      const a=cellM[1], inner=cellM[2];
+      const rM=a.match(/r="([^"]+)"/), tM=a.match(/t="([^"]+)"/), vM=inner.match(/<v>([\s\S]*?)<\/v>/);
+      const col=rM?rM[1].replace(/[0-9]/g,""):""; let val=vM?vM[1]:"";
+      if (tM&&tM[1]==="s") val=ss[parseInt(val)]||"";
+      cells.push({col,val});
+    }
+    rows.push(cells);
+  }
+  if (rows.length<2) return [];
+  const colToIdx=col=>{let n=0;for(let c of col)n=n*26+c.charCodeAt(0)-64;return n-1;};
+  const headers={};
+  for (const cell of rows[0]) headers[colToIdx(cell.col)]=cell.val;
+  return rows.slice(1).map(cells=>{
+    const obj={};
+    for (const cell of cells){const h=headers[colToIdx(cell.col)];if(h)obj[h]=cell.val;}
+    return obj;
+  }).filter(r=>Object.values(r).some(v=>v));
+}
+
+async function loadEventos() {
+  const docs = await window.__fb.list(COL);
+  return docs.map(d=>({...d, resultados: d.resultados ? JSON.parse(d.resultados) : []}));
+}
+async function saveEvento(ev) {
+  const {resultados, id, ...rest} = ev;
+  await window.__fb.save(COL, id, {...rest, resultados: JSON.stringify(resultados||[])});
+}
+
+/* ── UI helpers ─────────────────────────────────────────────────────────── */
+function LogoSVG({size="md"}) {
+  const scale=size==="sm"?0.38:size==="lg"?0.78:0.52;
+  return (
+    <svg width={Math.round(280*scale)} height={Math.round(110*scale)} viewBox="0 0 280 110" xmlns="http://www.w3.org/2000/svg" style={{display:"block"}}>
+      <text x="4"  y="58"  fontFamily="'Arial Black','Impact',sans-serif" fontWeight="900" fontSize="52" fill="#7DC230" letterSpacing="-2" fontStyle="italic">comodoro</text>
+      <text x="38" y="105" fontFamily="'Arial Black','Impact',sans-serif" fontWeight="900" fontSize="52" fill="#E8611A" letterSpacing="-2" fontStyle="italic">corre</text>
+    </svg>
+  );
+}
+
+function Badge({label, color="orange"}) {
+  const map={
+    orange:{bg:C.orangePale,color:C.orange,border:C.orangeBorder},
+    green: {bg:"#EDF7E1",color:C.greenDark,border:"#B8E08A"},
+    blue:  {bg:"#E6F1FB",color:"#0C447C",border:"#A8CDF0"},
+    purple:{bg:"#EEEDFE",color:"#3C3489",border:"#C4C0F8"},
+  };
+  const s=map[color]||map.orange;
+  return <span style={{background:s.bg,color:s.color,border:`0.5px solid ${s.border}`,fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:6}}>{label}</span>;
+}
+
+function tipoColor(tipo) {
+  const t=normalize(tipo);
+  if(t.includes("triatl"))                      return "purple";
+  if(t.includes("mtb")||t.includes("mountain")) return "blue";
+  if(t.includes("duatl"))                       return "green";
+  return "orange";
+}
+
+/* ── Header ─────────────────────────────────────────────────────────────── */
+function Header({view, setView, user, onLogout}) {
+  return (
+    <div style={{background:"#000",borderBottom:`3px solid ${C.orange}`,padding:"0 1rem"}}>
+      <div style={{maxWidth:900,margin:"0 auto",display:"flex",alignItems:"center",gap:16,height:66}}>
+        <div style={{cursor:"pointer"}} onClick={()=>setView("home")}><LogoSVG size="md"/></div>
+        <div style={{flex:1}}/>
+        {[["resultados","Clasificaciones"],["historial","Mi historial"]].map(([v,l])=>(
+          <button key={v} onClick={()=>setView(v)}
+            style={{background:view===v?C.orange:"transparent",border:`1px solid ${view===v?C.orange:"rgba(255,255,255,0.25)"}`,color:"#fff",fontSize:13,padding:"6px 14px",borderRadius:6,cursor:"pointer",fontWeight:view===v?600:400}}>
+            {l}
+          </button>
+        ))}
+        {user
+          ? <button onClick={onLogout} style={{background:"transparent",border:"1px solid rgba(255,255,255,0.2)",color:"rgba(255,255,255,0.7)",fontSize:12,padding:"5px 10px",borderRadius:6,cursor:"pointer"}}>Salir</button>
+          : <button onClick={()=>setView("adminLogin")} style={{background:"transparent",border:"1px solid rgba(255,255,255,0.2)",color:"rgba(255,255,255,0.7)",fontSize:12,padding:"5px 10px",borderRadius:6,cursor:"pointer"}}>Admin</button>
+        }
+      </div>
+    </div>
+  );
+}
+
+/* ── Home ───────────────────────────────────────────────────────────────── */
+function Home({setView, eventos}) {
+  const recientes=[...eventos].sort((a,b)=>new Date(b.fecha)-new Date(a.fecha)).slice(0,3);
+  return (
+    <div>
+      <div style={{background:"#000",borderRadius:14,border:`1px solid ${C.orangeBorder}`,padding:"2.5rem 2rem",marginBottom:"1.5rem",textAlign:"center",position:"relative",overflow:"hidden"}}>
+        <div style={{position:"absolute",top:0,left:0,right:0,bottom:0,opacity:0.05,backgroundImage:`repeating-linear-gradient(45deg,${C.orange} 0,${C.orange} 1px,transparent 0,transparent 50%)`,backgroundSize:"20px 20px"}}/>
+        <div style={{position:"relative"}}>
+          <div style={{display:"flex",justifyContent:"center",marginBottom:"1.25rem"}}><LogoSVG size="lg"/></div>
+          <p style={{color:C.gray,fontSize:13,margin:"0 0 0.75rem"}}>Sistema oficial de resultados · Desde 2007 · +200 eventos</p>
+          <p style={{color:"rgba(255,255,255,0.85)",fontSize:15,margin:"0 0 1.75rem",lineHeight:1.5}}>Consultá las clasificaciones de cada evento o revisá tu historial personal.</p>
+          <div style={{display:"flex",gap:12,justifyContent:"center",flexWrap:"wrap"}}>
+            <button onClick={()=>setView("resultados")} style={{background:C.orange,color:"#fff",border:"none",padding:"11px 28px",borderRadius:8,fontSize:14,cursor:"pointer",fontWeight:600}}>Ver clasificaciones</button>
+            <button onClick={()=>setView("historial")} style={{background:"transparent",color:C.orange,border:`1.5px solid ${C.orange}`,padding:"11px 28px",borderRadius:8,fontSize:14,cursor:"pointer",fontWeight:600}}>Mi historial personal</button>
+          </div>
+        </div>
+      </div>
+      <h2 style={{fontSize:15,fontWeight:600,margin:"0 0 12px"}}>Últimos eventos</h2>
+      {recientes.length===0&&<p style={{color:"#888",fontSize:14}}>Aún no hay eventos cargados.</p>}
+      <div style={{display:"grid",gap:10}}>
+        {recientes.map(ev=>(
+          <div key={ev.id} style={{background:"#fff",border:"0.5px solid #e5e7eb",borderRadius:10,padding:"1rem 1.25rem",display:"flex",alignItems:"center",gap:12,borderLeft:`3px solid ${C.orange}`}}>
+            <div style={{flex:1}}>
+              <p style={{margin:0,fontWeight:600,fontSize:15}}>{ev.nombre}</p>
+              <p style={{margin:"3px 0 0",fontSize:12,color:"#888"}}>{ev.fecha} · {ev.resultados?.length||0} participantes</p>
+            </div>
+            <Badge label={ev.tipo} color={tipoColor(ev.tipo)}/>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ── Modal corredor ─────────────────────────────────────────────────────── */
+function ModalCorredor({corredor, ev, onClose}) {
+  if (!corredor) return null;
+  return (
+    <div onClick={onClose} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.7)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:"1rem"}}>
+      <div onClick={e=>e.stopPropagation()} style={{background:"#fff",borderRadius:16,width:"100%",maxWidth:400,overflow:"hidden",boxShadow:"0 20px 60px rgba(0,0,0,0.5)"}}>
+        <div style={{background:C.orange,padding:"1.25rem 1.5rem",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+          <div>
+            <p style={{margin:0,fontWeight:700,fontSize:17,color:"#fff"}}>{corredor["Nombre y Apellido"]}</p>
+            <p style={{margin:"3px 0 0",fontSize:12,color:"rgba(255,255,255,0.85)"}}>{ev.nombre} · {ev.fecha}</p>
+          </div>
+          <button onClick={onClose} style={{background:"rgba(255,255,255,0.2)",border:"none",color:"#fff",width:32,height:32,borderRadius:"50%",cursor:"pointer",fontSize:20,lineHeight:"32px",fontWeight:700}}>×</button>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:1,background:"#e5e7eb"}}>
+          {[["Pos. General",corredor["Pos. Gral"]],["Pos. Categoría",corredor["Pos. Categoria"]]].map(([l,v])=>(
+            <div key={l} style={{background:"#fff",padding:"1rem",textAlign:"center"}}>
+              <p style={{margin:0,fontSize:30,fontWeight:800,color:C.orange}}>{v||"-"}</p>
+              <p style={{margin:"2px 0 0",fontSize:11,color:"#888"}}>{l}</p>
+            </div>
+          ))}
+        </div>
+        <div style={{padding:"1rem 1.5rem",display:"grid",gap:10}}>
+          {[["Categoría",corredor["Categoria"]],["Sexo",corredor["Sexo"]],["Agrupación",corredor["Agrupacion"]],["Nro. de corredor",corredor["Nro."]],["Distancia",corredor["Distancia"]],["Tiempo",corredor["Tiempo"]]].filter(([,v])=>v).map(([label,val])=>(
+            <div key={label} style={{display:"flex",justifyContent:"space-between",alignItems:"center",borderBottom:"0.5px solid #eee",paddingBottom:8}}>
+              <span style={{fontSize:13,color:"#666"}}>{label}</span>
+              <span style={{fontSize:13,fontWeight:600,fontFamily:label==="Tiempo"?"monospace":"inherit"}}>{val}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Detalle evento ─────────────────────────────────────────────────────── */
+function DetalleEvento({ev, onVolver}) {
+  const [filtroCat,setFiltroCat]   = useState("");
+  const [filtroSexo,setFiltroSexo] = useState("");
+  const [filtroDni,setFiltroDni]   = useState("");
+  const [corredor,setCorredor]     = useState(null);
+
+  let rows = [...(ev.resultados||[])].sort((a,b)=>(parseInt(a["Pos. Gral"])||9999)-(parseInt(b["Pos. Gral"])||9999));
+  if (filtroCat)  rows = rows.filter(r=>normalize(r["Categoria"])===normalize(filtroCat));
+  if (filtroSexo) rows = rows.filter(r=>normalize(r["Sexo"])===normalize(filtroSexo));
+  if (filtroDni)  rows = rows.filter(r=>String(r["DNI"]).replace(/\D/g,"").includes(filtroDni.replace(/\D/g,"")));
+
+  const cats  = [...new Set((ev.resultados||[]).map(r=>r["Categoria"]).filter(Boolean))].sort();
+  const sexos = [...new Set((ev.resultados||[]).map(r=>r["Sexo"]).filter(Boolean))].sort();
+  const inp   = {padding:"7px 10px",border:"0.5px solid #e5e7eb",borderRadius:8,fontSize:13,background:"#fff",width:"100%"};
+
+  return (
+    <div>
+      <ModalCorredor corredor={corredor} ev={ev} onClose={()=>setCorredor(null)}/>
+      <button onClick={onVolver} style={{background:"none",border:"none",color:C.orange,cursor:"pointer",fontSize:14,padding:"0 0 1rem",fontWeight:600}}>← Volver a eventos</button>
+      <div style={{background:"#fff",borderRadius:12,border:"0.5px solid #e5e7eb",padding:"1rem 1.25rem",marginBottom:"1rem",borderTop:`3px solid ${C.orange}`}}>
+        <div style={{display:"flex",alignItems:"flex-start",gap:12,flexWrap:"wrap"}}>
+          <div style={{flex:1}}>
+            <h2 style={{margin:0,fontSize:18,fontWeight:600}}>{ev.nombre}</h2>
+            <p style={{margin:"4px 0 0",fontSize:13,color:"#888"}}>{ev.fecha} · {ev.lugar||"Comodoro Rivadavia"} · {ev.resultados?.length||0} participantes</p>
+          </div>
+          <Badge label={ev.tipo} color={tipoColor(ev.tipo)}/>
+        </div>
+      </div>
+
+      {/* Filtros */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
+        <input placeholder="Buscar por DNI..." value={filtroDni} onChange={e=>setFiltroDni(e.target.value)} style={{...inp,gridColumn:"1 / -1"}}/>
+        <select value={filtroCat}  onChange={e=>setFiltroCat(e.target.value)}  style={inp}><option value="">Todas las categorías</option>{cats.map(c=><option key={c} value={c}>{c}</option>)}</select>
+        <select value={filtroSexo} onChange={e=>setFiltroSexo(e.target.value)} style={inp}><option value="">Ambos sexos</option>{sexos.map(s=><option key={s} value={s}>{s}</option>)}</select>
+      </div>
+
+      <div style={{background:"#fff",borderRadius:12,border:"0.5px solid #e5e7eb",overflow:"hidden"}}>
+        <div style={{overflowX:"auto"}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+            <thead>
+              <tr style={{background:C.orange}}>
+                {["Pos. Gral","Pos. Cat.","Nombre y Apellido","Categoría","Agrupación","Nro.","Dist.","Tiempo","Sexo"].map(h=>(
+                  <th key={h} style={{padding:"9px 10px",textAlign:"left",fontWeight:600,whiteSpace:"nowrap",color:"#fff",fontSize:12}}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.length===0&&<tr><td colSpan={9} style={{padding:"2rem",textAlign:"center",color:"#888"}}>Sin resultados para los filtros aplicados</td></tr>}
+              {rows.map((r,i)=>(
+                <tr key={i} style={{borderBottom:"0.5px solid #f3f4f6",background:i%2===0?"#fff":"#fafafa"}}>
+                  <td style={{padding:"7px 10px",fontWeight:700,color:C.orange}}>{r["Pos. Gral"]||"-"}</td>
+                  <td style={{padding:"7px 10px"}}>{r["Pos. Categoria"]||"-"}</td>
+                  <td onClick={()=>setCorredor(r)} style={{padding:"7px 10px",fontWeight:500,color:C.orange,cursor:"pointer",textDecoration:"underline dotted"}}>{r["Nombre y Apellido"]}</td>
+                  <td style={{padding:"7px 10px"}}>{r["Categoria"]||"-"}</td>
+                  <td style={{padding:"7px 10px",color:"#888"}}>{r["Agrupacion"]||"-"}</td>
+                  <td style={{padding:"7px 10px",color:"#888"}}>{r["Nro."]||"-"}</td>
+                  <td style={{padding:"7px 10px",color:"#888"}}>{r["Distancia"]||"-"}</td>
+                  <td style={{padding:"7px 10px",fontFamily:"monospace",fontWeight:600}}>{r["Tiempo"]||"-"}</td>
+                  <td style={{padding:"7px 10px"}}>{r["Sexo"]||"-"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div style={{padding:"8px 12px",fontSize:12,color:"#888",borderTop:"0.5px solid #e5e7eb"}}>
+          Mostrando {rows.length} de {ev.resultados?.length||0} participantes
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Lista eventos ──────────────────────────────────────────────────────── */
+function Resultados({eventos}) {
+  const [busq,setBusq] = useState("");
+  const [sel,setSel]   = useState(null);
+  const ev = sel ? eventos.find(e=>e.id===sel) : null;
+  if (sel && ev) return <DetalleEvento ev={ev} onVolver={()=>setSel(null)}/>;
+  // Filtrar y ordenar por fecha descendente dentro de cada año
+  const filtrados = eventos
+    .filter(ev=>normalize(ev.nombre).includes(normalize(busq))||normalize(ev.tipo).includes(normalize(busq))||(ev.fecha||"").includes(busq))
+    .sort((a,b)=>new Date(b.fecha)-new Date(a.fecha));
+
+  // Agrupar por año
+  const porAnio = {};
+  for (const ev of filtrados) {
+    const anio = (ev.fecha||"").slice(0,4) || "Sin fecha";
+    if (!porAnio[anio]) porAnio[anio] = [];
+    porAnio[anio].push(ev);
+  }
+  // Años descendentes, eventos dentro de cada año también descendentes por fecha
+  const anios = Object.keys(porAnio).sort((a,b)=>Number(b)-Number(a));
+  for (const anio of anios) {
+    porAnio[anio].sort((a,b)=>new Date(b.fecha)-new Date(a.fecha));
+  }
+
+  return (
+    <div>
+      <h2 style={{margin:"0 0 1rem",fontSize:18,fontWeight:600}}>Clasificaciones por evento</h2>
+      <input placeholder="Buscar evento por nombre, tipo o fecha..." value={busq} onChange={e=>setBusq(e.target.value)} style={{width:"100%",padding:"9px 12px",border:"1px solid #e5e7eb",borderRadius:8,fontSize:14,marginBottom:"1rem",background:"#fff"}}/>
+      {filtrados.length===0&&<p style={{color:"#888",fontSize:14}}>No se encontraron eventos.</p>}
+      {anios.map(anio=>(
+        <div key={anio} style={{marginBottom:"1.5rem"}}>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+            <span style={{background:"#000",color:C.orange,fontWeight:700,fontSize:13,padding:"3px 14px",borderRadius:20,letterSpacing:1}}>{anio}</span>
+            <div style={{flex:1,height:1,background:"#e5e7eb"}}/>
+            <span style={{fontSize:12,color:"#aaa"}}>{porAnio[anio].length} evento{porAnio[anio].length!==1?"s":""}</span>
+          </div>
+          <div style={{display:"grid",gap:10}}>
+            {porAnio[anio].map(ev=>(
+              <div key={ev.id} onClick={()=>setSel(ev.id)}
+                style={{background:"#fff",border:"0.5px solid #e5e7eb",borderLeft:`3px solid ${C.orange}`,borderRadius:10,padding:"1rem 1.25rem",display:"flex",alignItems:"center",gap:12,cursor:"pointer"}}
+                onMouseEnter={e=>e.currentTarget.style.boxShadow=`0 2px 12px ${C.orange}30`}
+                onMouseLeave={e=>e.currentTarget.style.boxShadow="none"}>
+                <div style={{flex:1}}>
+                  <p style={{margin:0,fontWeight:600,fontSize:15}}>{ev.nombre}</p>
+                  <p style={{margin:"3px 0 0",fontSize:12,color:"#888"}}>{ev.fecha} · {ev.lugar||"Comodoro Rivadavia"} · {ev.resultados?.length||0} participantes</p>
+                </div>
+                <Badge label={ev.tipo} color={tipoColor(ev.tipo)}/>
+                <span style={{fontSize:20,color:C.orange,fontWeight:700}}>›</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ── Historial ──────────────────────────────────────────────────────────── */
+function Historial({eventos}) {
+  const [dni,setDni]           = useState("");
+  const [buscado,setBuscado]   = useState(null);
+  const [resultados,setResultados] = useState([]);
+
+  const buscar = () => {
+    if (!dni.trim()) return;
+    const found=[];
+    for (const ev of eventos)
+      for (const r of (ev.resultados||[]))
+        if (String(r["DNI"]).replace(/\D/g,"")===dni.replace(/\D/g,"")) found.push({evento:ev,resultado:r});
+    found.sort((a,b)=>new Date(b.evento.fecha)-new Date(a.evento.fecha));
+    setBuscado(dni); setResultados(found);
+  };
+
+  return (
+    <div>
+      <h2 style={{margin:"0 0 0.5rem",fontSize:18,fontWeight:600}}>Mi historial personal</h2>
+      <p style={{margin:"0 0 1.5rem",fontSize:14,color:"#888"}}>Ingresá tu DNI (sin puntos) para ver todos los eventos en los que participaste.</p>
+      <div style={{display:"flex",gap:8,marginBottom:"1.5rem"}}>
+        <input placeholder="Ej: 28456789" value={dni} onChange={e=>setDni(e.target.value)} onKeyDown={e=>e.key==="Enter"&&buscar()}
+          style={{flex:1,padding:"9px 12px",border:"1px solid #e5e7eb",borderRadius:8,fontSize:14,background:"#fff"}}/>
+        <button onClick={buscar} style={{background:C.orange,color:"#fff",border:"none",padding:"9px 22px",borderRadius:8,fontSize:14,cursor:"pointer",fontWeight:600}}>Buscar</button>
+      </div>
+      {buscado!==null&&(resultados.length===0
+        ?<p style={{color:"#888",fontSize:14}}>No se encontraron participaciones para el DNI <strong>{buscado}</strong>.</p>
+        :<>
+          <div style={{background:"#000",border:`1px solid ${C.orangeBorder}`,borderRadius:12,padding:"1.25rem",marginBottom:"1.25rem"}}>
+            <p style={{margin:0,fontWeight:700,fontSize:16,color:"#fff"}}>{resultados[0].resultado["Nombre y Apellido"]}</p>
+            <p style={{margin:"4px 0 0",fontSize:13,color:C.gray}}>{resultados.length} evento{resultados.length!==1?"s":""} participado{resultados.length!==1?"s":""}</p>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(110px,1fr))",gap:10,marginBottom:"1.25rem"}}>
+            {[
+              ["Eventos",resultados.length],
+              ["Mejor pos.",Math.min(...resultados.map(r=>parseInt(r.resultado["Pos. Gral"])||999))===999?"—":Math.min(...resultados.map(r=>parseInt(r.resultado["Pos. Gral"])||999))],
+              ["Categorías",[...new Set(resultados.map(r=>r.resultado["Categoria"]).filter(Boolean))].length],
+              ["Tipos",[...new Set(resultados.map(r=>r.evento.tipo))].length],
+            ].map(([label,val])=>(
+              <div key={label} style={{background:"#fff",border:"0.5px solid #e5e7eb",borderRadius:10,padding:"10px 12px",textAlign:"center",borderTop:`3px solid ${C.orange}`}}>
+                <p style={{margin:0,fontSize:22,fontWeight:700,color:C.orange}}>{val}</p>
+                <p style={{margin:"2px 0 0",fontSize:11,color:"#888"}}>{label}</p>
+              </div>
+            ))}
+          </div>
+          <div style={{background:"#fff",borderRadius:12,border:"0.5px solid #e5e7eb",overflow:"hidden"}}>
+            <div style={{overflowX:"auto"}}>
+              <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+                <thead>
+                  <tr style={{background:C.orange}}>
+                    {["Evento","Fecha","Tipo","Pos. Gral","Pos. Cat.","Categoría","Tiempo","Agrupación"].map(h=>(
+                      <th key={h} style={{padding:"9px 10px",textAlign:"left",fontWeight:600,whiteSpace:"nowrap",color:"#fff",fontSize:12}}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {resultados.map(({evento,resultado},i)=>(
+                    <tr key={i} style={{borderBottom:"0.5px solid #f3f4f6",background:i%2===0?"#fff":"#fafafa"}}>
+                      <td style={{padding:"8px 10px",fontWeight:600}}>{evento.nombre}</td>
+                      <td style={{padding:"8px 10px",whiteSpace:"nowrap"}}>{evento.fecha}</td>
+                      <td style={{padding:"8px 10px"}}><Badge label={evento.tipo} color={tipoColor(evento.tipo)}/></td>
+                      <td style={{padding:"8px 10px",fontWeight:700,color:C.orange,textAlign:"center"}}>{resultado["Pos. Gral"]||"-"}</td>
+                      <td style={{padding:"8px 10px",textAlign:"center"}}>{resultado["Pos. Categoria"]||"-"}</td>
+                      <td style={{padding:"8px 10px"}}>{resultado["Categoria"]||"-"}</td>
+                      <td style={{padding:"8px 10px",fontFamily:"monospace",fontWeight:600}}>{resultado["Tiempo"]||"-"}</td>
+                      <td style={{padding:"8px 10px",color:"#888"}}>{resultado["Agrupacion"]||"-"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ── Admin login ────────────────────────────────────────────────────────── */
+function AdminLogin({onLogin}) {
+  const [pass,setPass]       = useState("");
+  const [err,setErr]         = useState("");
+  const [loading,setLoading] = useState(false);
+  const login = async () => {
+    if (!pass.trim()) return;
+    setLoading(true); setErr("");
+    try {
+      await window.__fb.login(ADMIN_EMAIL, pass);
+      onLogin();
+    } catch(e) {
+      const code=e.code||"";
+      if (code.includes("wrong-password")||code.includes("invalid-credential")) setErr("Contraseña incorrecta.");
+      else if (code.includes("user-not-found"))    setErr("Usuario no encontrado.");
+      else if (code.includes("too-many-requests")) setErr("Demasiados intentos. Esperá unos minutos.");
+      else setErr("Error: "+e.message);
+    } finally { setLoading(false); }
+  };
+  return (
+    <div style={{maxWidth:360,margin:"2rem auto"}}>
+      <div style={{background:"#fff",borderRadius:12,border:"1px solid #e5e7eb",padding:"2rem",borderTop:`3px solid ${C.orange}`}}>
+        <div style={{display:"flex",justifyContent:"center",marginBottom:"1.5rem"}}><LogoSVG size="md"/></div>
+        <h2 style={{margin:"0 0 1.25rem",fontSize:17,fontWeight:600,textAlign:"center"}}>Acceso administrador</h2>
+        <div style={{display:"grid",gap:12}}>
+          <input type="password" placeholder="Contraseña" value={pass} onChange={e=>{setPass(e.target.value);setErr("");}} onKeyDown={e=>e.key==="Enter"&&login()} style={{padding:"9px 12px",border:"1px solid #e5e7eb",borderRadius:8,fontSize:14,width:"100%"}}/>
+          {err&&<p style={{margin:0,fontSize:13,color:"#c0392b"}}>{err}</p>}
+          <button onClick={login} disabled={loading} style={{background:C.orange,color:"#fff",border:"none",padding:"11px",borderRadius:8,fontSize:14,cursor:"pointer",fontWeight:600,opacity:loading?0.7:1}}>
+            {loading?"Verificando...":"Ingresar"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Carga masiva ───────────────────────────────────────────────────────── */
+function CargaMasiva({eventos, onSaved, onBack}) {
+  const [status,setStatus]   = useState("");
+  const [err,setErr]         = useState("");
+  const [preview,setPreview] = useState(null);
+  const [saving,setSaving]   = useState(false);
+  const fileRef = useRef();
+  const inferTipo = n => { const t=normalize(n); if(t.includes("triatl"))return"Triatlón"; if(t.includes("duatl"))return"Duatlón"; if(t.includes("mtb")||t.includes("mountain")||t.includes("bici"))return"MTB"; return"Running"; };
+  const handleFile = e => {
+    const file=e.target.files[0]; if(!file)return;
+    setErr(""); setStatus("Procesando..."); setPreview(null);
+    const reader=new FileReader();
+    reader.onload=ev2=>{
+      try {
+        const text=new TextDecoder("utf-8").decode(new Uint8Array(ev2.target.result));
+        const rows=parseCSV(text);
+        if(!rows||rows.length===0){setErr("No se pudieron leer datos.");setStatus("");return;}
+        const grupos={};
+        for(const r of rows){const prueba=String(r["Prueba"]||"Sin nombre").trim();const fecha=String(r["Fecha Evento"]||"").trim();const key=prueba+"||"+fecha;if(!grupos[key])grupos[key]={prueba,fecha,rows:[]};grupos[key].rows.push(r);}
+        const evNuevos=Object.values(grupos).map((g,i)=>({id:`ev-${Date.now()}-${i}`,nombre:g.prueba,fecha:g.fecha,tipo:inferTipo(g.prueba),lugar:"Comodoro Rivadavia",resultados:g.rows}));
+        setPreview(evNuevos); setStatus(`Se detectaron ${evNuevos.length} evento(s).`);
+      } catch { setErr("Error al procesar."); setStatus(""); }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+  const confirmar = async () => {
+    if(!preview)return; setSaving(true);
+    for(const ev of preview){
+      const exist=eventos.find(e=>normalize(e.nombre)===normalize(ev.nombre)&&e.fecha===ev.fecha);
+      await saveEvento(exist?{...ev,id:exist.id}:ev);
+    }
+    setSaving(false); await onSaved(); onBack();
+  };
+  return (
+    <div style={{maxWidth:620}}>
+      <button onClick={onBack} style={{background:"none",border:"none",color:C.orange,cursor:"pointer",fontSize:14,padding:"0 0 1rem",fontWeight:600}}>← Volver</button>
+      <div style={{background:"#fff",borderRadius:12,border:"0.5px solid #e5e7eb",padding:"1.5rem",borderTop:`3px solid ${C.orange}`}}>
+        <h2 style={{margin:"0 0 0.5rem",fontSize:17,fontWeight:600}}>Carga masiva</h2>
+        <p style={{margin:"0 0 1.25rem",fontSize:13,color:"#888"}}>CSV agrupado por <strong>Prueba</strong> y <strong>Fecha Evento</strong>.</p>
+        <div style={{border:`1.5px dashed ${C.orangeBorder}`,borderRadius:10,padding:"1.5rem",textAlign:"center",background:C.orangePale,cursor:"pointer",marginBottom:"1rem"}} onClick={()=>fileRef.current.click()}>
+          <p style={{margin:"0 0 4px",fontSize:15,fontWeight:600,color:C.orange}}>Subir archivo CSV</p>
+          <p style={{margin:0,fontSize:12,color:"#888"}}>Hacé clic para seleccionar</p>
+          <input ref={fileRef} type="file" accept=".csv" onChange={handleFile} style={{display:"none"}}/>
+        </div>
+        {status&&<p style={{margin:"0 0 12px",fontSize:13,color:C.orange,fontWeight:500}}>{status}</p>}
+        {err   &&<p style={{margin:"0 0 12px",fontSize:13,color:"#c0392b"}}>{err}</p>}
+        {preview&&<>
+          <div style={{border:"0.5px solid #e5e7eb",borderRadius:10,overflow:"hidden",marginBottom:"1rem"}}>
+            <div style={{background:C.orange,padding:"8px 12px",fontSize:12,fontWeight:600,color:"#fff"}}>Vista previa</div>
+            {preview.map((ev,i)=>(
+              <div key={i} style={{padding:"10px 14px",borderTop:"0.5px solid #e5e7eb",display:"flex",alignItems:"center",gap:10}}>
+                <div style={{flex:1}}><p style={{margin:0,fontWeight:600,fontSize:14}}>{ev.nombre}</p><p style={{margin:"2px 0 0",fontSize:12,color:"#888"}}>{ev.fecha} · {ev.resultados.length} participantes</p></div>
+                <Badge label={ev.tipo} color={tipoColor(ev.tipo)}/>
+              </div>
+            ))}
+          </div>
+          <button onClick={confirmar} disabled={saving} style={{width:"100%",background:C.orange,color:"#fff",border:"none",padding:"11px",borderRadius:8,fontSize:14,cursor:"pointer",fontWeight:600,opacity:saving?0.7:1}}>
+            {saving?"Guardando...":"Confirmar e importar "+preview.length+" evento"+(preview.length!==1?"s":"")}
+          </button>
+        </>}
+      </div>
+    </div>
+  );
+}
+
+/* ── Admin form ─────────────────────────────────────────────────────────── */
+function AdminForm({ev, eventos, onSaved, onCancel}) {
+  const [nombre,setNombre]         = useState(ev?.nombre||"");
+  const [fecha,setFecha]           = useState(ev?.fecha||"");
+  const [tipo,setTipo]             = useState(ev?.tipo||"Running");
+  const [lugar,setLugar]           = useState(ev?.lugar||"Comodoro Rivadavia");
+  const [resultados,setResultados] = useState(ev?.resultados||[]);
+  const [status,setStatus]         = useState(ev?.resultados?.length>0?`${ev.resultados.length} participantes cargados`:"");
+  const [err,setErr]               = useState("");
+  const [saving,setSaving]         = useState(false);
+  const fileRef = useRef();
+  const handleFile = e => {
+    const file=e.target.files[0]; if(!file)return; setErr(""); setStatus("Procesando...");
+    const reader=new FileReader();
+    reader.onload=async ev2=>{
+      try {
+        const buf=ev2.target.result; let rows=parseXLSX(buf);
+        if(!rows||rows.length===0){const text=new TextDecoder("utf-8").decode(new Uint8Array(buf));rows=parseCSV(text);}
+        if(!rows||rows.length===0){setErr("No se pudieron leer datos.");setStatus("");return;}
+        setResultados(rows); setStatus(`✓ ${rows.length} participantes cargados`);
+      } catch { setErr("Error al procesar."); setStatus(""); }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+  const handleSave = async () => {
+    if(!nombre.trim()||!fecha.trim()){alert("Completá nombre y fecha.");return;}
+    setSaving(true);
+    await saveEvento({id:ev?.id||`ev-${Date.now()}`,nombre,fecha,tipo,lugar,resultados});
+    setSaving(false); await onSaved(); onCancel();
+  };
+  const inp={width:"100%",padding:"9px 10px",border:"0.5px solid #e5e7eb",borderRadius:8,fontSize:14,background:"#fff"};
+  return (
+    <div style={{maxWidth:560}}>
+      <button onClick={onCancel} style={{background:"none",border:"none",color:C.orange,cursor:"pointer",fontSize:14,padding:"0 0 1rem",fontWeight:600}}>← Volver</button>
+      <div style={{background:"#fff",borderRadius:12,border:"0.5px solid #e5e7eb",padding:"1.5rem",borderTop:`3px solid ${C.orange}`}}>
+        <h2 style={{margin:"0 0 1.25rem",fontSize:17,fontWeight:600}}>{ev?"Editar evento":"Nuevo evento"}</h2>
+        <div style={{display:"grid",gap:14}}>
+          <div><label style={{fontSize:12,color:"#888",display:"block",marginBottom:4}}>Nombre</label><input value={nombre} onChange={e=>setNombre(e.target.value)} placeholder="Ej: Maratón de los Vientos 2024" style={inp}/></div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+            <div><label style={{fontSize:12,color:"#888",display:"block",marginBottom:4}}>Fecha</label><input type="date" value={fecha} onChange={e=>setFecha(e.target.value)} style={inp}/></div>
+            <div><label style={{fontSize:12,color:"#888",display:"block",marginBottom:4}}>Tipo</label><select value={tipo} onChange={e=>setTipo(e.target.value)} style={inp}>{["Running","MTB","Duatlón","Triatlón"].map(t=><option key={t}>{t}</option>)}</select></div>
+          </div>
+          <div><label style={{fontSize:12,color:"#888",display:"block",marginBottom:4}}>Lugar</label><input value={lugar} onChange={e=>setLugar(e.target.value)} style={inp}/></div>
+          <div>
+            <label style={{fontSize:12,color:"#888",display:"block",marginBottom:6}}>Resultados (.xlsx o .csv)</label>
+            <div style={{border:`1.5px dashed ${C.orangeBorder}`,borderRadius:10,padding:"1.5rem",textAlign:"center",background:C.orangePale,cursor:"pointer"}} onClick={()=>fileRef.current.click()}>
+              <p style={{margin:"0 0 4px",fontSize:14,fontWeight:600,color:C.orange}}>Subir archivo</p>
+              <p style={{margin:0,fontSize:12,color:"#888"}}>Hacé clic para seleccionar</p>
+              <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" onChange={handleFile} style={{display:"none"}}/>
+            </div>
+            {status&&<p style={{margin:"6px 0 0",fontSize:13,color:C.orange,fontWeight:500}}>{status}</p>}
+            {err   &&<p style={{margin:"6px 0 0",fontSize:13,color:"#c0392b"}}>{err}</p>}
+            {resultados.length>0&&<p style={{margin:"4px 0 0",fontSize:12,color:"#888"}}>Columnas: {Object.keys(resultados[0]).join(" · ")}</p>}
+          </div>
+          <button onClick={handleSave} disabled={saving} style={{background:C.orange,color:"#fff",border:"none",padding:"11px",borderRadius:8,fontSize:14,cursor:"pointer",fontWeight:600,opacity:saving?0.7:1}}>
+            {saving?"Guardando...":"Guardar evento"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Admin panel ────────────────────────────────────────────────────────── */
+function Admin({eventos, onRefresh, setView}) {
+  const [tab,setTab]           = useState("lista");
+  const [editId,setEditId]     = useState(null);
+  const [deleting,setDeleting] = useState(null);
+  const eliminar = async id => {
+    if(!window.confirm("¿Eliminar este evento?"))return;
+    setDeleting(id); await window.__fb.del(COL,id); await onRefresh(); setDeleting(null);
+  };
+  if (tab==="nuevo"||tab==="editar") {
+    const ev=tab==="editar"?eventos.find(e=>e.id===editId):null;
+    return <AdminForm ev={ev} eventos={eventos} onSaved={async()=>{await onRefresh();}} onCancel={()=>setTab("lista")}/>;
+  }
+  if (tab==="masiva") return <CargaMasiva eventos={eventos} onSaved={async()=>{await onRefresh();}} onBack={()=>setTab("lista")}/>;
+  return (
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"1rem",flexWrap:"wrap",gap:10}}>
+        <h2 style={{margin:0,fontSize:18,fontWeight:600}}>Panel de administración</h2>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          <button onClick={()=>setTab("masiva")} style={{background:C.orangePale,color:C.orange,border:`1px solid ${C.orangeBorder}`,padding:"8px 14px",borderRadius:8,fontSize:13,cursor:"pointer",fontWeight:600}}>⬆ Carga masiva</button>
+          <button onClick={()=>setTab("nuevo")}  style={{background:C.orange,color:"#fff",border:"none",padding:"8px 16px",borderRadius:8,fontSize:13,cursor:"pointer",fontWeight:600}}>+ Nuevo evento</button>
+        </div>
+      </div>
+      {eventos.length===0&&<p style={{color:"#888",fontSize:14}}>No hay eventos cargados.</p>}
+      <div style={{display:"grid",gap:10}}>
+        {[...eventos].sort((a,b)=>new Date(b.fecha)-new Date(a.fecha)).map(ev=>(
+          <div key={ev.id} style={{background:"#fff",border:"0.5px solid #e5e7eb",borderLeft:`3px solid ${C.orange}`,borderRadius:10,padding:"1rem 1.25rem",display:"flex",alignItems:"center",gap:12}}>
+            <div style={{flex:1}}><p style={{margin:0,fontWeight:600}}>{ev.nombre}</p><p style={{margin:"3px 0 0",fontSize:12,color:"#888"}}>{ev.fecha} · {ev.tipo} · {ev.resultados?.length||0} participantes</p></div>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={()=>{setEditId(ev.id);setTab("editar");}} style={{background:"none",border:"0.5px solid #e5e7eb",padding:"6px 12px",borderRadius:6,fontSize:12,cursor:"pointer"}}>Editar</button>
+              <button onClick={()=>eliminar(ev.id)} disabled={deleting===ev.id} style={{background:"none",border:"0.5px solid #F09595",padding:"6px 12px",borderRadius:6,fontSize:12,cursor:"pointer",color:"#c0392b",opacity:deleting===ev.id?0.5:1}}>
+                {deleting===ev.id?"...":"Eliminar"}
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ── App root ───────────────────────────────────────────────────────────── */
+function App() {
+  const [view,setView]         = useState("home");
+  const [eventos,setEventos]   = useState([]);
+  const [loading,setLoading]   = useState(true);
+  const [user,setUser]         = useState(null);
+
+  useEffect(()=>{
+    const init = () => {
+      window.__fb.onAuth(u=>{ setUser(u); if(u) setView("admin"); });
+      loadEventos().then(ev=>{ setEventos(ev); setLoading(false); });
+    };
+    if (window.__fb) init();
+    else window.addEventListener("fb-ready", init, {once:true});
+  },[]);
+
+  const refresh  = async () => { const ev=await loadEventos(); setEventos(ev); };
+  const onLogout = async () => { await window.__fb.logout(); setUser(null); setView("home"); };
+
+  if (loading) return (
+    <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh"}}>
+      <p style={{color:"#888",fontSize:14}}>Cargando...</p>
+    </div>
+  );
+
+  return (
+    <div style={{fontFamily:"system-ui,sans-serif",minHeight:"100vh",background:"#f4f4f5"}}>
+      <Header view={view} setView={setView} user={user} onLogout={onLogout}/>
+      <div style={{maxWidth:900,margin:"0 auto",padding:"1.5rem 1rem"}}>
+        {view==="home"       &&<Home setView={setView} eventos={eventos}/>}
+        {view==="resultados" &&<Resultados eventos={eventos}/>}
+        {view==="historial"  &&<Historial eventos={eventos}/>}
+        {view==="adminLogin" &&<AdminLogin onLogin={()=>setView("admin")}/>}
+        {view==="admin"      &&(user?<Admin eventos={eventos} onRefresh={refresh} setView={setView}/>:<AdminLogin onLogin={()=>setView("admin")}/>)}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
